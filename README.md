@@ -9,4 +9,4 @@ Goal: Learn the xv6 behavior and other related UNIX features.
 
 Extract zip file -> Apply PATCH  
 
-**** NOTE: The ZIP file are NOT mine, You can find the original github page here https://github.com/mit-pdos/xv6-public ****  
+**** NOTE: The ZIP file is NOT mine, You can find the original github page here https://github.com/mit-pdos/xv6-public ****  
