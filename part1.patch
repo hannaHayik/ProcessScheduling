@@ -1,0 +1,3128 @@
+diff --git a/Makefile b/Makefile
+index 09d790c..5829f4b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -168,6 +168,8 @@ mkfs: mkfs.c fs.h
+ UPROGS=\
+ 	_cat\
+ 	_echo\
++	_policy\
++	_sanity\
+ 	_forktest\
+ 	_grep\
+ 	_init\
+@@ -175,6 +177,8 @@ UPROGS=\
+ 	_ln\
+ 	_ls\
+ 	_mkdir\
++	_helloworld\
++	_memsizetest\
+ 	_rm\
+ 	_sh\
+ 	_stressfs\
+diff --git a/cat.c b/cat.c
+index 5ddc820..e74de1a 100644
+--- a/cat.c
++++ b/cat.c
+@@ -12,12 +12,12 @@ cat(int fd)
+   while((n = read(fd, buf, sizeof(buf))) > 0) {
+     if (write(1, buf, n) != n) {
+       printf(1, "cat: write error\n");
+-      exit();
++      exit(1);
+     }
+   }
+   if(n < 0){
+     printf(1, "cat: read error\n");
+-    exit();
++    exit(1);
+   }
+ }
+ 
+@@ -28,16 +28,16 @@ main(int argc, char *argv[])
+ 
+   if(argc <= 1){
+     cat(0);
+-    exit();
++    exit(0);
+   }
+ 
+   for(i = 1; i < argc; i++){
+     if((fd = open(argv[i], 0)) < 0){
+       printf(1, "cat: cannot open %s\n", argv[i]);
+-      exit();
++      exit(1);
+     }
+     cat(fd);
+     close(fd);
+   }
+-  exit();
++  exit(0);
+ }
+diff --git a/defs.h b/defs.h
+index 82fb982..a79af88 100644
+--- a/defs.h
++++ b/defs.h
+@@ -9,6 +9,7 @@ struct spinlock;
+ struct sleeplock;
+ struct stat;
+ struct superblock;
++struct perf;
+ 
+ // bio.c
+ void            binit(void);
+@@ -104,7 +105,7 @@ int             pipewrite(struct pipe*, char*, int);
+ //PAGEBREAK: 16
+ // proc.c
+ int             cpuid(void);
+-void            exit(void);
++void            exit(int status);
+ int             fork(void);
+ int             growproc(int);
+ int             kill(int);
+@@ -117,9 +118,15 @@ void            sched(void);
+ void            setproc(struct proc*);
+ void            sleep(void*, struct spinlock*);
+ void            userinit(void);
+-int             wait(void);
++int             wait(int *status);
+ void            wakeup(void*);
+ void            yield(void);
++int             set_ps_priority(int);       // task 4
++int             set_cfs_priority(int);      // task 4
++int             policy(int);                // task 4.4
++int             proc_info(struct perf*);    //task4
++void            ticksUpdate();              //Task4
++struct proc* processWithminAcc();          //Task4
+ 
+ // swtch.S
+ void            swtch(struct context**, struct context*);
+@@ -188,3 +195,5 @@ void            clearpteu(pde_t *pgdir, char *uva);
+ 
+ // number of elements in fixed-size array
+ #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
++
++int sched_type;
+diff --git a/echo.c b/echo.c
+index 806dee0..eed68a0 100644
+--- a/echo.c
++++ b/echo.c
+@@ -9,5 +9,5 @@ main(int argc, char *argv[])
+ 
+   for(i = 1; i < argc; i++)
+     printf(1, "%s%s", argv[i], i+1 < argc ? " " : "\n");
+-  exit();
++  exit(0);
+ }
+diff --git a/forktest.c b/forktest.c
+index 8bc984d..7d7658e 100644
+--- a/forktest.c
++++ b/forktest.c
+@@ -25,24 +25,26 @@ forktest(void)
+     if(pid < 0)
+       break;
+     if(pid == 0)
+-      exit();
++      exit(0);
+   }
+ 
+   if(n == N){
+     printf(1, "fork claimed to work N times!\n", N);
+-    exit();
++    exit(0);
+   }
+ 
++  int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++
+   for(; n > 0; n--){
+-    if(wait() < 0){
++    if(wait(&Cstatus) < 0){
+       printf(1, "wait stopped early\n");
+-      exit();
++      exit(1);
+     }
+   }
+ 
+-  if(wait() != -1){
++  if(wait(&Cstatus) != -1){
+     printf(1, "wait got too many\n");
+-    exit();
++    exit(1);
+   }
+ 
+   printf(1, "fork test OK\n");
+@@ -52,5 +54,5 @@ int
+ main(void)
+ {
+   forktest();
+-  exit();
++  exit(0);
+ }
+diff --git a/grep.c b/grep.c
+index adc4835..d354f2a 100644
+--- a/grep.c
++++ b/grep.c
+@@ -43,24 +43,24 @@ main(int argc, char *argv[])
+ 
+   if(argc <= 1){
+     printf(2, "usage: grep pattern [file ...]\n");
+-    exit();
++    exit(1);
+   }
+   pattern = argv[1];
+ 
+   if(argc <= 2){
+     grep(pattern, 0);
+-    exit();
++    exit(0);
+   }
+ 
+   for(i = 2; i < argc; i++){
+     if((fd = open(argv[i], 0)) < 0){
+       printf(1, "grep: cannot open %s\n", argv[i]);
+-      exit();
++      exit(1);
+     }
+     grep(pattern, fd);
+     close(fd);
+   }
+-  exit();
++  exit(0);
+ }
+ 
+ // Regexp matcher from Kernighan & Pike,
+diff --git a/helloworld.c b/helloworld.c
+new file mode 100644
+index 0000000..e6c77e4
+--- /dev/null
++++ b/helloworld.c
+@@ -0,0 +1,9 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++
++int
++main(int argc, char *argv[]){
++    printf(1,"%s","Hello World XV6\n");
++    exit(0);
++}
+diff --git a/init.c b/init.c
+index 046b551..bb47bca 100644
+--- a/init.c
++++ b/init.c
+@@ -24,14 +24,15 @@ main(void)
+     pid = fork();
+     if(pid < 0){
+       printf(1, "init: fork failed\n");
+-      exit();
++      exit(1);
+     }
+     if(pid == 0){
+       exec("sh", argv);
+       printf(1, "init: exec sh failed\n");
+-      exit();
++      exit(1);
+     }
+-    while((wpid=wait()) >= 0 && wpid != pid)
++    int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++    while((wpid=wait(&Cstatus)) >= 0 && wpid != pid)
+       printf(1, "zombie!\n");
+   }
+ }
+diff --git a/kill.c b/kill.c
+index 364f6af..875916c 100644
+--- a/kill.c
++++ b/kill.c
+@@ -9,9 +9,9 @@ main(int argc, char **argv)
+ 
+   if(argc < 2){
+     printf(2, "usage: kill pid...\n");
+-    exit();
++    exit(1);
+   }
+   for(i=1; i<argc; i++)
+     kill(atoi(argv[i]));
+-  exit();
++  exit(0);
+ }
+diff --git a/ln.c b/ln.c
+index cf8a64e..b919408 100644
+--- a/ln.c
++++ b/ln.c
+@@ -7,9 +7,10 @@ main(int argc, char *argv[])
+ {
+   if(argc != 3){
+     printf(2, "Usage: ln old new\n");
+-    exit();
++    exit(1);
+   }
+-  if(link(argv[1], argv[2]) < 0)
++  int x;
++  if((x=link(argv[1], argv[2])) < 0)
+     printf(2, "link %s %s: failed\n", argv[1], argv[2]);
+-  exit();
++  exit(x*-1);
+ }
+diff --git a/ls.c b/ls.c
+index 2862913..27742c2 100644
+--- a/ls.c
++++ b/ls.c
+@@ -77,9 +77,9 @@ main(int argc, char *argv[])
+ 
+   if(argc < 2){
+     ls(".");
+-    exit();
++    exit(0);
+   }
+   for(i=1; i<argc; i++)
+     ls(argv[i]);
+-  exit();
++  exit(0);
+ }
+diff --git a/memsizetest.c b/memsizetest.c
+new file mode 100644
+index 0000000..63a6972
+--- /dev/null
++++ b/memsizetest.c
+@@ -0,0 +1,28 @@
++
++#include "syscall.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++
++int main(){
++int size;
++size=memsize();
++printf(1,"The process is using: %dB\n",size);
++printf(1,"Allocating more memory\n");
++char* memory;
++memory=(char *)malloc ( 2000 * sizeof(char) );  
++strcpy( memory, "hello");
++size =memsize();
++printf(1,"The process is using: %dB\n",size);
++free(memory);
++size=memsize();
++printf(1,"Freeing memory\n");
++printf(1,"The process is using: %dB\n",size);
++exit(0);
++ 
++}
++
++
++
++
++
+diff --git a/mkdir.c b/mkdir.c
+index 6e4c954..2d90781 100644
+--- a/mkdir.c
++++ b/mkdir.c
+@@ -9,7 +9,7 @@ main(int argc, char *argv[])
+ 
+   if(argc < 2){
+     printf(2, "Usage: mkdir files...\n");
+-    exit();
++    exit(1);
+   }
+ 
+   for(i = 1; i < argc; i++){
+@@ -19,5 +19,5 @@ main(int argc, char *argv[])
+     }
+   }
+ 
+-  exit();
++  exit(0);
+ }
+diff --git a/perfSave.h b/perfSave.h
+new file mode 100644
+index 0000000..fca90f5
+--- /dev/null
++++ b/perfSave.h
+@@ -0,0 +1,7 @@
++
++struct perf {
++  int ps_priority;
++  int stime;
++  int retime;
++  int rtime;
++};
+\ No newline at end of file
+diff --git a/policy.c b/policy.c
+new file mode 100644
+index 0000000..558cfc2
+--- /dev/null
++++ b/policy.c
+@@ -0,0 +1,29 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "syscall.h"
++
++int main(int argc, char *argv[])
++{
++    if (argc >= 2)
++    {
++        int numbOfpolicy = atoi(argv[1]);
++        if (numbOfpolicy == 0)
++            printf(1, "Policy has been successfully changed to Default Policy\n");
++        if (numbOfpolicy == 1)
++            printf(1, "Policy has been successfully changed to Priority Policy\n");
++        if (numbOfpolicy == 2)
++            printf(1, "Policy has been successfully changed to CFS Policy\n");
++        if (numbOfpolicy >= 0 && numbOfpolicy <= 2)
++            policy(numbOfpolicy);
++        else
++            printf(1, "Error replacing policy, no such a policy number (%d)");
++    }
++
++    else
++    {
++        printf(1, "few arguments");
++        exit(1);
++    }
++    exit(0);
++}
+\ No newline at end of file
+diff --git a/proc.c b/proc.c
+index 806b1b1..424990f 100644
+--- a/proc.c
++++ b/proc.c
+@@ -7,7 +7,8 @@
+ #include "proc.h"
+ #include "spinlock.h"
+ 
+-struct {
++struct
++{
+   struct spinlock lock;
+   struct proc proc[NPROC];
+ } ptable;
+@@ -18,34 +19,40 @@ int nextpid = 1;
+ extern void forkret(void);
+ extern void trapret(void);
+ 
+-static void wakeup1(void *chan);
++extern int sched_type;                                             //Task4.4,scheduler type (global variable)
+ 
+-void
+-pinit(void)
++double timeRatio(struct proc *process);                            //Task4.3, timeRatio calculator function
++int minimumAcculamtor(void);
++void ticksUpdate();                                                //Task4.3, Update time parameters after tick++ (called by trap.c)
++struct proc *processWithminAcc();                                  //Task4.2, Returns pointer to process with minimum accumlator
++static void wakeup1(void *chan);
++double minimumTimeratio(void);                                     //Task4.3, Returns double minimal time ratio in process table
++void pinit(void)
+ {
+   initlock(&ptable.lock, "ptable");
+ }
+ 
+ // Must be called with interrupts disabled
+-int
+-cpuid() {
+-  return mycpu()-cpus;
++int cpuid()
++{
++  return mycpu() - cpus;
+ }
+ 
+ // Must be called with interrupts disabled to avoid the caller being
+ // rescheduled between reading lapicid and running through the loop.
+-struct cpu*
++struct cpu *
+ mycpu(void)
+ {
+   int apicid, i;
+-  
+-  if(readeflags()&FL_IF)
++
++  if (readeflags() & FL_IF)
+     panic("mycpu called with interrupts enabled\n");
+-  
++
+   apicid = lapicid();
+   // APIC IDs are not guaranteed to be contiguous. Maybe we should have
+   // a reverse map, or reserve a register to store &cpus[i].
+-  for (i = 0; i < ncpu; ++i) {
++  for (i = 0; i < ncpu; ++i)
++  {
+     if (cpus[i].apicid == apicid)
+       return &cpus[i];
+   }
+@@ -54,8 +61,9 @@ mycpu(void)
+ 
+ // Disable interrupts so that we are not rescheduled
+ // while reading proc from the cpu structure
+-struct proc*
+-myproc(void) {
++struct proc *
++myproc(void)
++{
+   struct cpu *c;
+   struct proc *p;
+   pushcli();
+@@ -70,7 +78,7 @@ myproc(void) {
+ // If found, change state to EMBRYO and initialize
+ // state required to run in the kernel.
+ // Otherwise return 0.
+-static struct proc*
++static struct proc *
+ allocproc(void)
+ {
+   struct proc *p;
+@@ -78,8 +86,8 @@ allocproc(void)
+ 
+   acquire(&ptable.lock);
+ 
+-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+-    if(p->state == UNUSED)
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
++    if (p->state == UNUSED)
+       goto found;
+ 
+   release(&ptable.lock);
+@@ -88,11 +96,18 @@ allocproc(void)
+ found:
+   p->state = EMBRYO;
+   p->pid = nextpid++;
++  p->ps_priority = 5;                                             //Task4.2 field           
++  p->accumlator = minimumAcculamtor();                            //Task4.2 field (initial value minimal acc in PT)
++  p->retime = 0;                                                  //Task4.3 field
++  p->rtime = 0;                                                   //Task4.3 field
++  p->stime = 0;                                                   //Task4.3 field
++  p->cfs_priority=1;                                              //Task4.3 field (initial value 1)
+ 
+   release(&ptable.lock);
+ 
+   // Allocate kernel stack.
+-  if((p->kstack = kalloc()) == 0){
++  if ((p->kstack = kalloc()) == 0)
++  {
+     p->state = UNUSED;
+     return 0;
+   }
+@@ -100,15 +115,15 @@ found:
+ 
+   // Leave room for trap frame.
+   sp -= sizeof *p->tf;
+-  p->tf = (struct trapframe*)sp;
++  p->tf = (struct trapframe *)sp;
+ 
+   // Set up new context to start executing at forkret,
+   // which returns to trapret.
+   sp -= 4;
+-  *(uint*)sp = (uint)trapret;
++  *(uint *)sp = (uint)trapret;
+ 
+   sp -= sizeof *p->context;
+-  p->context = (struct context*)sp;
++  p->context = (struct context *)sp;
+   memset(p->context, 0, sizeof *p->context);
+   p->context->eip = (uint)forkret;
+ 
+@@ -117,16 +132,15 @@ found:
+ 
+ //PAGEBREAK: 32
+ // Set up first user process.
+-void
+-userinit(void)
++void userinit(void)
+ {
+   struct proc *p;
+   extern char _binary_initcode_start[], _binary_initcode_size[];
+ 
+   p = allocproc();
+-  
++
+   initproc = p;
+-  if((p->pgdir = setupkvm()) == 0)
++  if ((p->pgdir = setupkvm()) == 0)
+     panic("userinit: out of memory?");
+   inituvm(p->pgdir, _binary_initcode_start, (int)_binary_initcode_size);
+   p->sz = PGSIZE;
+@@ -137,7 +151,7 @@ userinit(void)
+   p->tf->ss = p->tf->ds;
+   p->tf->eflags = FL_IF;
+   p->tf->esp = PGSIZE;
+-  p->tf->eip = 0;  // beginning of initcode.S
++  p->tf->eip = 0; // beginning of initcode.S
+ 
+   safestrcpy(p->name, "initcode", sizeof(p->name));
+   p->cwd = namei("/");
+@@ -155,18 +169,20 @@ userinit(void)
+ 
+ // Grow current process's memory by n bytes.
+ // Return 0 on success, -1 on failure.
+-int
+-growproc(int n)
++int growproc(int n)
+ {
+   uint sz;
+   struct proc *curproc = myproc();
+ 
+   sz = curproc->sz;
+-  if(n > 0){
+-    if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
++  if (n > 0)
++  {
++    if ((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
+       return -1;
+-  } else if(n < 0){
+-    if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
++  }
++  else if (n < 0)
++  {
++    if ((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
+       return -1;
+   }
+   curproc->sz = sz;
+@@ -177,20 +193,21 @@ growproc(int n)
+ // Create a new process copying p as the parent.
+ // Sets up stack to return as if from system call.
+ // Caller must set state of returned proc to RUNNABLE.
+-int
+-fork(void)
++int fork(void)
+ {
+   int i, pid;
+   struct proc *np;
+   struct proc *curproc = myproc();
+ 
+   // Allocate process.
+-  if((np = allocproc()) == 0){
++  if ((np = allocproc()) == 0)
++  {
+     return -1;
+   }
+ 
+   // Copy process state from proc.
+-  if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
++  if ((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0)
++  {
+     kfree(np->kstack);
+     np->kstack = 0;
+     np->state = UNUSED;
+@@ -198,13 +215,14 @@ fork(void)
+   }
+   np->sz = curproc->sz;
+   np->parent = curproc;
++  np->cfs_priority=curproc->cfs_priority;                         //Task4.3 field copied into child manually
+   *np->tf = *curproc->tf;
+ 
+   // Clear %eax so that fork returns 0 in the child.
+   np->tf->eax = 0;
+ 
+-  for(i = 0; i < NOFILE; i++)
+-    if(curproc->ofile[i])
++  for (i = 0; i < NOFILE; i++)
++    if (curproc->ofile[i])
+       np->ofile[i] = filedup(curproc->ofile[i]);
+   np->cwd = idup(curproc->cwd);
+ 
+@@ -224,19 +242,20 @@ fork(void)
+ // Exit the current process.  Does not return.
+ // An exited process remains in the zombie state
+ // until its parent calls wait() to find out it exited.
+-void
+-exit(void)
++void exit(int status)
+ {
+   struct proc *curproc = myproc();
+   struct proc *p;
+   int fd;
+ 
+-  if(curproc == initproc)
++  if (curproc == initproc)
+     panic("init exiting");
+ 
+   // Close all open files.
+-  for(fd = 0; fd < NOFILE; fd++){
+-    if(curproc->ofile[fd]){
++  for (fd = 0; fd < NOFILE; fd++)
++  {
++    if (curproc->ofile[fd])
++    {
+       fileclose(curproc->ofile[fd]);
+       curproc->ofile[fd] = 0;
+     }
+@@ -253,14 +272,17 @@ exit(void)
+   wakeup1(curproc->parent);
+ 
+   // Pass abandoned children to init.
+-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+-    if(p->parent == curproc){
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
++  {
++    if (p->parent == curproc)
++    {
+       p->parent = initproc;
+-      if(p->state == ZOMBIE)
++      if (p->state == ZOMBIE)
+         wakeup1(initproc);
+     }
+   }
+ 
++  curproc->exitStatus = status; //added line task 3.1
+   // Jump into the scheduler, never to return.
+   curproc->state = ZOMBIE;
+   sched();
+@@ -269,23 +291,27 @@ exit(void)
+ 
+ // Wait for a child process to exit and return its pid.
+ // Return -1 if this process has no children.
+-int
+-wait(void)
++int wait(int *status)
+ {
+   struct proc *p;
+   int havekids, pid;
+   struct proc *curproc = myproc();
+-  
++
+   acquire(&ptable.lock);
+-  for(;;){
++  for (;;)
++  {
+     // Scan through table looking for exited children.
+     havekids = 0;
+-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+-      if(p->parent != curproc)
++    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
++    {
++      if (p->parent != curproc)
+         continue;
+       havekids = 1;
+-      if(p->state == ZOMBIE){
++      if (p->state == ZOMBIE)
++      {
+         // Found one.
++        if (status != 0)                           //Task3, if status isn't null, assign child's exit status
++          *status = p->exitStatus;
+         pid = p->pid;
+         kfree(p->kstack);
+         p->kstack = 0;
+@@ -301,13 +327,16 @@ wait(void)
+     }
+ 
+     // No point waiting if we don't have any children.
+-    if(!havekids || curproc->killed){
++    if (!havekids || curproc->killed)
++    {
++      if (status != 0)
++        status = null;
+       release(&ptable.lock);
+       return -1;
+     }
+ 
+     // Wait for children to exit.  (See wakeup1 call in proc_exit.)
+-    sleep(curproc, &ptable.lock);  //DOC: wait-sleep
++    sleep(curproc, &ptable.lock); //DOC: wait-sleep
+   }
+ }
+ 
+@@ -319,39 +348,84 @@ wait(void)
+ //  - swtch to start running that process
+ //  - eventually that process transfers control
+ //      via swtch back to the scheduler.
+-void
+-scheduler(void)
++void scheduler(void)
+ {
+   struct proc *p;
+   struct cpu *c = mycpu();
+   c->proc = 0;
+-  
+-  for(;;){
++  double x;                                  //Task4.4, x is a helping variable
++
++  for (;;)
++  {
+     // Enable interrupts on this processor.
+     sti();
+-
+-    // Loop over process table looking for process to run.
+-    acquire(&ptable.lock);
+-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+-      if(p->state != RUNNABLE)
+-        continue;
+-
+-      // Switch to chosen process.  It is the process's job
+-      // to release ptable.lock and then reacquire it
+-      // before jumping back to us.
+-      c->proc = p;
+-      switchuvm(p);
+-      p->state = RUNNING;
+-
+-      swtch(&(c->scheduler), p->context);
+-      switchkvm();
+-
+-      // Process is done running for now.
+-      // It should have changed its p->state before coming back.
+-      c->proc = 0;
++    if (sched_type == 1)                     //scheduler type 1, PS scheduling
++    {
++      acquire(&ptable.lock);
++      x=minimumAcculamtor();                 //Task4.2, x has minimum accumlator, we find the first process to match it
++      for (p = ptable.proc; p < &ptable.proc[NPROC]; p++){
++        if(p->state==RUNNABLE && p->accumlator==x){                        
++          // Switch to chosen process.  It is the process's job
++          // to release ptable.lock and then reacquire it
++          // before jumping back to us.
++          c->proc = p;
++          switchuvm(p);
++          p->state = RUNNING;
++
++          swtch(&(c->scheduler), p->context);
++          switchkvm();
++
++          // Process is done running for now.
++          // It should have changed its p->state before coming back.
++          c->proc = 0;
++          break;                                  //Task4, break loop and find a new process with min acc to run
++        }
++      }
++      release(&ptable.lock);
++      continue;
++    }
++    else 
++    if (sched_type == 2)                         //scheduler type 2, CFS scheduling
++    {
++      acquire(&ptable.lock);
++      x=minimumTimeratio();                      //Task4.3, x has minimum timeRatio in PT, we find the right process
++      for (p = ptable.proc; p < &ptable.proc[NPROC]; p++){
++        if(p->state==RUNNABLE && timeRatio(p)==x){                  //Check if Runnable AND has minimum timeRatio in PT
++          c->proc = p;
++          switchuvm(p);
++          p->state = RUNNING;
++
++          swtch(&(c->scheduler), p->context);
++          switchkvm();
++
++          c->proc = 0;
++          break;
++        }
++      }
++      release(&ptable.lock);
++      continue;
++    }
++    else 
++    if (sched_type == 0)                        //Task4.1, default scheduling (RR)
++    {
++      // Loop over process table looking for process to run.
++      acquire(&ptable.lock);
++      for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
++      {
++        if (p->state != RUNNABLE)
++          continue;
++
++        c->proc = p;
++        switchuvm(p);
++        p->state = RUNNING;
++
++        swtch(&(c->scheduler), p->context);
++        switchkvm();
++
++        c->proc = 0;
++      }
++      release(&ptable.lock);
+     }
+-    release(&ptable.lock);
+-
+   }
+ }
+ 
+@@ -362,19 +436,18 @@ scheduler(void)
+ // be proc->intena and proc->ncli, but that would
+ // break in the few places where a lock is held but
+ // there's no process.
+-void
+-sched(void)
++void sched(void)
+ {
+   int intena;
+   struct proc *p = myproc();
+ 
+-  if(!holding(&ptable.lock))
++  if (!holding(&ptable.lock))
+     panic("sched ptable.lock");
+-  if(mycpu()->ncli != 1)
++  if (mycpu()->ncli != 1)
+     panic("sched locks");
+-  if(p->state == RUNNING)
++  if (p->state == RUNNING)
+     panic("sched running");
+-  if(readeflags()&FL_IF)
++  if (readeflags() & FL_IF)
+     panic("sched interruptible");
+   intena = mycpu()->intena;
+   swtch(&p->context, mycpu()->scheduler);
+@@ -382,10 +455,10 @@ sched(void)
+ }
+ 
+ // Give up the CPU for one scheduling round.
+-void
+-yield(void)
++void yield(void)
+ {
+-  acquire(&ptable.lock);  //DOC: yieldlock
++  acquire(&ptable.lock); //DOC: yieldlock
++  myproc()->accumlator=myproc()->accumlator+myproc()->ps_priority;          //Task4.2, every time quantum end with yield() (by process itself OR trap.c)
+   myproc()->state = RUNNABLE;
+   sched();
+   release(&ptable.lock);
+@@ -393,14 +466,14 @@ yield(void)
+ 
+ // A fork child's very first scheduling by scheduler()
+ // will swtch here.  "Return" to user space.
+-void
+-forkret(void)
++void forkret(void)
+ {
+   static int first = 1;
+   // Still holding ptable.lock from scheduler.
+   release(&ptable.lock);
+ 
+-  if (first) {
++  if (first)
++  {
+     // Some initialization functions must be run in the context
+     // of a regular process (e.g., they call sleep), and thus cannot
+     // be run from main().
+@@ -414,15 +487,14 @@ forkret(void)
+ 
+ // Atomically release lock and sleep on chan.
+ // Reacquires lock when awakened.
+-void
+-sleep(void *chan, struct spinlock *lk)
++void sleep(void *chan, struct spinlock *lk)
+ {
+   struct proc *p = myproc();
+-  
+-  if(p == 0)
++
++  if (p == 0)
+     panic("sleep");
+ 
+-  if(lk == 0)
++  if (lk == 0)
+     panic("sleep without lk");
+ 
+   // Must acquire ptable.lock in order to
+@@ -431,8 +503,9 @@ sleep(void *chan, struct spinlock *lk)
+   // guaranteed that we won't miss any wakeup
+   // (wakeup runs with ptable.lock locked),
+   // so it's okay to release lk.
+-  if(lk != &ptable.lock){  //DOC: sleeplock0
+-    acquire(&ptable.lock);  //DOC: sleeplock1
++  if (lk != &ptable.lock)
++  {                        //DOC: sleeplock0
++    acquire(&ptable.lock); //DOC: sleeplock1
+     release(lk);
+   }
+   // Go to sleep.
+@@ -445,7 +518,8 @@ sleep(void *chan, struct spinlock *lk)
+   p->chan = 0;
+ 
+   // Reacquire original lock.
+-  if(lk != &ptable.lock){  //DOC: sleeplock2
++  if (lk != &ptable.lock)
++  { //DOC: sleeplock2
+     release(&ptable.lock);
+     acquire(lk);
+   }
+@@ -457,16 +531,19 @@ sleep(void *chan, struct spinlock *lk)
+ static void
+ wakeup1(void *chan)
+ {
++
+   struct proc *p;
+ 
+-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+-    if(p->state == SLEEPING && p->chan == chan)
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
++    if (p->state == SLEEPING && p->chan == chan)
++    {
+       p->state = RUNNABLE;
++      p->accumlator = minimumAcculamtor();          //Task4.2, woken process gets highest priority to run
++    }
+ }
+ 
+ // Wake up all processes sleeping on chan.
+-void
+-wakeup(void *chan)
++void wakeup(void *chan)
+ {
+   acquire(&ptable.lock);
+   wakeup1(chan);
+@@ -476,17 +553,18 @@ wakeup(void *chan)
+ // Kill the process with the given pid.
+ // Process won't exit until it returns
+ // to user space (see trap in trap.c).
+-int
+-kill(int pid)
++int kill(int pid)
+ {
+   struct proc *p;
+ 
+   acquire(&ptable.lock);
+-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+-    if(p->pid == pid){
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
++  {
++    if (p->pid == pid)
++    {
+       p->killed = 1;
+       // Wake process from sleep if necessary.
+-      if(p->state == SLEEPING)
++      if (p->state == SLEEPING)
+         p->state = RUNNABLE;
+       release(&ptable.lock);
+       return 0;
+@@ -500,35 +578,191 @@ kill(int pid)
+ // Print a process listing to console.  For debugging.
+ // Runs when user types ^P on console.
+ // No lock to avoid wedging a stuck machine further.
+-void
+-procdump(void)
++void procdump(void)
+ {
+   static char *states[] = {
+-  [UNUSED]    "unused",
+-  [EMBRYO]    "embryo",
+-  [SLEEPING]  "sleep ",
+-  [RUNNABLE]  "runble",
+-  [RUNNING]   "run   ",
+-  [ZOMBIE]    "zombie"
+-  };
++      [UNUSED] "unused",
++      [EMBRYO] "embryo",
++      [SLEEPING] "sleep ",
++      [RUNNABLE] "runble",
++      [RUNNING] "run   ",
++      [ZOMBIE] "zombie"};
+   int i;
+   struct proc *p;
+   char *state;
+   uint pc[10];
+ 
+-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+-    if(p->state == UNUSED)
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
++  {
++    if (p->state == UNUSED)
+       continue;
+-    if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
++    if (p->state >= 0 && p->state < NELEM(states) && states[p->state])
+       state = states[p->state];
+     else
+       state = "???";
+     cprintf("%d %s %s", p->pid, state, p->name);
+-    if(p->state == SLEEPING){
+-      getcallerpcs((uint*)p->context->ebp+2, pc);
+-      for(i=0; i<10 && pc[i] != 0; i++)
++    if (p->state == SLEEPING)
++    {
++      getcallerpcs((uint *)p->context->ebp + 2, pc);
++      for (i = 0; i < 10 && pc[i] != 0; i++)
+         cprintf(" %p", pc[i]);
+     }
+     cprintf("\n");
+   }
+ }
++
++int set_ps_priority(int priority)                        //Task4.2, changes PS priority, returns -1 on invalid values        
++{
++  if(priority>=1 && priority<=10){
++    myproc()->ps_priority = priority;
++    return 0;
++  }
++  return -1;
++}
++
++int set_cfs_priority(int priority)                       //Task4.3, changes CFS priority, returns -1 on invalid values
++{
++  if (priority >= 1 && priority <= 3){
++    myproc()->cfs_priority = priority;
++    return 1;
++  }
++  return -1;
++}
++
++int policy(int schedule_type)                           //Task4.4, changes schedule type, invalid values dealt with in policy.c
++{
++  sched_type = schedule_type;
++  return 0;
++}
++
++int proc_info(struct perf *performance)                //Task4.5, retrieve process info
++{
++  //acquire();
++  performance->ps_priority = myproc()->ps_priority;
++  performance->retime = myproc()->retime;
++  performance->rtime = myproc()->rtime;
++  performance->stime = myproc()->stime;
++  return 0;
++}
++
++//find minimum accumlator for PS_scheduling in process table
++int minimumAcculamtor()
++{
++  int flag = 0;
++  int min = -1;
++  struct proc *p;
++
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)                //get initial value to compare with
++  {
++    if (p->state == RUNNABLE)
++    {
++      flag = 1;
++      min = p->accumlator;
++    }
++  }
++
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)                //find minimal acc
++  {
++    if (p->state == RUNNABLE)
++    {
++      if (min > p->accumlator)
++        min = p->accumlator;
++    }
++  }
++
++  if (flag == 1)
++    return min;
++  else
++    return 0;
++}
++
++double minimumTimeratio()
++{
++  int flag = 0;
++  double min = -1;
++  struct proc *p;
++
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)                  //same as minimumAccumlator
++  {
++    if (p->state == RUNNABLE)
++    {
++      flag = 1;
++      min = timeRatio(p);
++    }
++  }
++
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
++  {
++    if (p->state == RUNNABLE)
++    {
++      if (min > timeRatio(p))
++        min = timeRatio(p);
++    }
++  }
++
++  if (flag == 1)
++    return min;
++  else
++    return 0;
++}
++//find the process with the min accumalted value (returns pointer or Null)
++struct proc *processWithminAcc()
++{
++  struct proc *answer=null;
++  int min = -1;
++  struct proc *p;
++
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
++  {
++    if (p->state == RUNNABLE)
++    {
++      min = p->accumlator;
++    }
++    
++  }
++
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
++  {
++    if (p->state == RUNNABLE)
++    {
++      if (min > p->accumlator){
++        min = p->accumlator;
++        answer = p;
++      }
++    }
++  }
++  return answer;
++}
++// calculate the timeRatio
++double timeRatio(struct proc *process)
++{
++  double decayFactor=0;                       //Task4.3 calculate according to Decay Factor definition in assignment
++  if(process->cfs_priority==1)
++    decayFactor=0.75;
++  if(process->cfs_priority==2)
++    decayFactor=1;
++  if(process->cfs_priority==3)
++    decayFactor=1.25;  
++  double y=(process->rtime * decayFactor);
++  int x=((process->rtime + process->retime + process->stime));
++  double z=y/(double)x;
++  return z;
++}
++
++// update time paramaters for every process Task4.3
++void ticksUpdate()
++{
++  struct proc *p;
++  // Loop over process table looking for process to run.
++  acquire(&ptable.lock);
++  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
++  {
++    if (p->state == RUNNABLE)
++      p->retime++;
++    if (p->state == RUNNING)
++      p->rtime++;
++    if (p->state == SLEEPING)
++      p->stime++;
++  }
++  release(&ptable.lock);
++}
+diff --git a/proc.h b/proc.h
+index 1647114..a0ec865 100644
+--- a/proc.h
++++ b/proc.h
+@@ -49,6 +49,22 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++  int exitStatus;                        // 0=exited succesfully, otherwise error
++  long long accumlator;                  // task 4.2 field
++  int ps_priority;                       // task 4 field
++  int cfs_priority;                      // task 4.3 field
++  int rtime;                             // task 4.3 field, time process was in running state.
++  int stime;                             // task 4.3 field, time process was in sleeping state.
++  int retime;                            // task 4.3 field, time process was in ready/runnable state.
++  int creationTime;                      // task 4.3 field
++};
++
++
++struct perf {
++  int ps_priority;
++  int stime;
++  int retime;
++  int rtime;
+ };
+ 
+ // Process memory is laid out contiguously, low addresses first:
+diff --git a/rm.c b/rm.c
+index 4fd33c8..1e6daec 100644
+--- a/rm.c
++++ b/rm.c
+@@ -9,7 +9,7 @@ main(int argc, char *argv[])
+ 
+   if(argc < 2){
+     printf(2, "Usage: rm files...\n");
+-    exit();
++    exit(1);
+   }
+ 
+   for(i = 1; i < argc; i++){
+@@ -19,5 +19,5 @@ main(int argc, char *argv[])
+     }
+   }
+ 
+-  exit();
++  exit(0);
+ }
+diff --git a/sanity.c b/sanity.c
+new file mode 100644
+index 0000000..1245b39
+--- /dev/null
++++ b/sanity.c
+@@ -0,0 +1,55 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fcntl.h"
++#include "perfSave.h"
++
++
++int main()
++{
++    printf(1, "PID   PS_PRIORITY     STIME       RETIME         RTIME\n");
++    int pid1=-1, pid2=-1, pid3=-1;
++
++    pid1 = fork();                              //Create first child process
++    if(pid1>0)
++        pid2=fork();                            //if allows the main process to enter only, creates second child
++    if(pid2>0)
++        pid3=fork();                            //same as above, creates third child
++    if(pid1==0){                                //only first child has pid1=0, so this code is exclusive to him, changes priority as asked in assignment
++        set_ps_priority(10);    //Lowest PS                    
++        set_cfs_priority(3);    //Lowest CFS   
++    }
++    if(pid2==0){                                //changes priorities for second child
++        set_ps_priority(5);     //Normal PS
++        set_cfs_priority(2);    //Normal CFS 
++    }
++    if(pid3==0){                                //changes priorities for third child
++        set_ps_priority(1);     //Highest PS
++        set_cfs_priority(1);    //Highest CFS
++    }
++        
++    int status;
++    if (pid3 > 0){                              //only "father" process has pid3=0, father process waits for 3 children to exit()
++        wait(&status);
++        wait(&status);
++        wait(&status);
++    }
++    if (pid1 == 0 || pid2==0 || pid3==0)
++    {
++        int i = 1000000;
++        int dummy = 0;
++        while (i--){
++            printf(1,"");                      //empty printing to make heavier process
++            dummy += i;
++        }
++        struct perf p;
++        proc_info(&p);
++        printf(1,"%d           ",getpid());
++        printf(1,"%d            ",p.ps_priority);
++        printf(1,"%d           ",p.stime);
++        printf(1,"%d              ",p.retime);
++        printf(1,"%d\n",p.rtime);
++        exit(0);
++    }
++    exit(0);
++}
+\ No newline at end of file
+diff --git a/sh.c b/sh.c
+index 054bab9..00f5af9 100644
+--- a/sh.c
++++ b/sh.c
+@@ -65,7 +65,7 @@ runcmd(struct cmd *cmd)
+   struct redircmd *rcmd;
+ 
+   if(cmd == 0)
+-    exit();
++    exit(0);
+ 
+   switch(cmd->type){
+   default:
+@@ -74,7 +74,7 @@ runcmd(struct cmd *cmd)
+   case EXEC:
+     ecmd = (struct execcmd*)cmd;
+     if(ecmd->argv[0] == 0)
+-      exit();
++      exit(1);
+     exec(ecmd->argv[0], ecmd->argv);
+     printf(2, "exec %s failed\n", ecmd->argv[0]);
+     break;
+@@ -84,7 +84,7 @@ runcmd(struct cmd *cmd)
+     close(rcmd->fd);
+     if(open(rcmd->file, rcmd->mode) < 0){
+       printf(2, "open %s failed\n", rcmd->file);
+-      exit();
++      exit(1);
+     }
+     runcmd(rcmd->cmd);
+     break;
+@@ -93,7 +93,8 @@ runcmd(struct cmd *cmd)
+     lcmd = (struct listcmd*)cmd;
+     if(fork1() == 0)
+       runcmd(lcmd->left);
+-    wait();
++    int Cstatus;    //child exit's status returning from wait call, Task 3.2
++    wait(&Cstatus);
+     runcmd(lcmd->right);
+     break;
+ 
+@@ -117,8 +118,10 @@ runcmd(struct cmd *cmd)
+     }
+     close(p[0]);
+     close(p[1]);
+-    wait();
+-    wait();
++    int Cstatus1;    //child exit's status returning from wait call, Task 3.2
++    int Cstatus2;    //child exit's status returning from wait call, Task 3.2
++    wait(&Cstatus1);
++    wait(&Cstatus2);
+     break;
+ 
+   case BACK:
+@@ -127,7 +130,7 @@ runcmd(struct cmd *cmd)
+       runcmd(bcmd->cmd);
+     break;
+   }
+-  exit();
++  exit(0);
+ }
+ 
+ int
+@@ -166,16 +169,17 @@ main(void)
+     }
+     if(fork1() == 0)
+       runcmd(parsecmd(buf));
+-    wait();
++    int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++    wait(&Cstatus);
+   }
+-  exit();
++  exit(0);
+ }
+ 
+ void
+ panic(char *s)
+ {
+   printf(2, "%s\n", s);
+-  exit();
++  exit(0);
+ }
+ 
+ int
+diff --git a/stressfs.c b/stressfs.c
+index c0a4743..d162826 100644
+--- a/stressfs.c
++++ b/stressfs.c
+@@ -43,7 +43,8 @@ main(int argc, char *argv[])
+     read(fd, data, sizeof(data));
+   close(fd);
+ 
+-  wait();
++  int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++  wait(&Cstatus);
+ 
+-  exit();
++  exit(0);
+ }
+diff --git a/syscall.c b/syscall.c
+index ee85261..78741df 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -81,7 +81,7 @@ argstr(int n, char **pp)
+     return -1;
+   return fetchstr(addr, pp);
+ }
+-
++extern int memsize(void);                       //Task2
+ extern int sys_chdir(void);
+ extern int sys_close(void);
+ extern int sys_dup(void);
+@@ -103,8 +103,13 @@ extern int sys_unlink(void);
+ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
++extern int sys_set_ps_priority(void);           //Task4.2
++extern int sys_set_cfs_priority(void);          //Task4.3
++extern int sys_policy(void);                    //Task4.4
++extern int sys_proc_info(void);                 //Task4.5
+ 
+ static int (*syscalls[])(void) = {
++[SYS_memsize] memsize,                          //Task2
+ [SYS_fork]    sys_fork,
+ [SYS_exit]    sys_exit,
+ [SYS_wait]    sys_wait,
+@@ -126,6 +131,10 @@ static int (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_set_ps_priority] sys_set_ps_priority,     //Task4.2
++[SYS_set_cfs_priority] sys_set_cfs_priority,   //Task4.3
++[SYS_policy] sys_policy,                       //Task4.4
++[SYS_proc_info] sys_proc_info                  //Task4.5
+ };
+ 
+ void
+diff --git a/syscall.h b/syscall.h
+index bc5f356..10a3285 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -20,3 +20,9 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_set_ps_priority 22
++#define SYS_set_cfs_priority 23
++#define SYS_policy 24
++#define SYS_proc_info 25
++#define SYS_memsize    26
++
+diff --git a/sysproc.c b/sysproc.c
+index 0686d29..1000ab4 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -7,67 +7,73 @@
+ #include "mmu.h"
+ #include "proc.h"
+ 
+-int
+-sys_fork(void)
++int memsize(void){                  //Task2
++  return myproc()->sz;
++}
++
++int sys_fork(void)
+ {
+   return fork();
+ }
+ 
+-int
+-sys_exit(void)
++int sys_exit(void)
+ {
+-  exit();
+-  return 0;  // not reached
++  int exitArg;
++  if (argint(0, &exitArg) == 0)
++    exit(0);
++  else
++    exit(1);
++  return 0; // not reached
+ }
+ 
+-int
+-sys_wait(void)
++int sys_wait(void)              //using argptr because wait(*int status)
+ {
+-  return wait();
++ int *stackArg;
++if (argptr(0,(void*) &stackArg, sizeof(stackArg)) < 0)
++  return wait(null);
++return wait(stackArg);
+ }
+ 
+-int
+-sys_kill(void)
++int sys_kill(void)
+ {
+   int pid;
+ 
+-  if(argint(0, &pid) < 0)
++  if (argint(0, &pid) < 0)
+     return -1;
+   return kill(pid);
+ }
+ 
+-int
+-sys_getpid(void)
++int sys_getpid(void)
+ {
+   return myproc()->pid;
+ }
+ 
+-int
+-sys_sbrk(void)
++int sys_sbrk(void)
+ {
+   int addr;
+   int n;
+ 
+-  if(argint(0, &n) < 0)
++  if (argint(0, &n) < 0)
+     return -1;
+   addr = myproc()->sz;
+-  if(growproc(n) < 0)
++  if (growproc(n) < 0)
+     return -1;
+   return addr;
+ }
+ 
+-int
+-sys_sleep(void)
++int sys_sleep(void)
+ {
+   int n;
+   uint ticks0;
+ 
+-  if(argint(0, &n) < 0)
++  if (argint(0, &n) < 0)
+     return -1;
+   acquire(&tickslock);
+   ticks0 = ticks;
+-  while(ticks - ticks0 < n){
+-    if(myproc()->killed){
++  while (ticks - ticks0 < n)
++  {
++    if (myproc()->killed)
++    {
+       release(&tickslock);
+       return -1;
+     }
+@@ -79,8 +85,7 @@ sys_sleep(void)
+ 
+ // return how many clock tick interrupts have occurred
+ // since start.
+-int
+-sys_uptime(void)
++int sys_uptime(void)
+ {
+   uint xticks;
+ 
+@@ -89,3 +94,36 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++//set ps priority task 4.2 (System Call)
++int sys_set_ps_priority(void)
++{
++  int stackArg;
++  argint(0, &stackArg);
++  return set_ps_priority(stackArg);
++}
++
++//set cfs priority (System Call)
++int sys_set_cfs_priority(int priority)
++{
++  int stackArg;
++  argint(0, &stackArg);
++  return set_cfs_priority(stackArg);
++}
++
++//changes scheduler policy (System Call)
++int sys_policy(void)
++{
++  int stackArg;
++  argint(0, &stackArg);
++  return policy(stackArg);
++}
++
++//retrieve process info (System Call)
++int sys_proc_info(void)
++{
++  struct perf *performance;
++  if (argptr(0,(void*) &performance, sizeof(*performance)) < 0)
++    return -1;
++  return proc_info(performance);
++}
+diff --git a/trap.c b/trap.c
+index 41c66eb..ddf42f1 100644
+--- a/trap.c
++++ b/trap.c
+@@ -38,11 +38,11 @@ trap(struct trapframe *tf)
+ {
+   if(tf->trapno == T_SYSCALL){
+     if(myproc()->killed)
+-      exit();
++      exit(1);
+     myproc()->tf = tf;
+     syscall();
+     if(myproc()->killed)
+-      exit();
++      exit(1);
+     return;
+   }
+ 
+@@ -50,6 +50,7 @@ trap(struct trapframe *tf)
+   case T_IRQ0 + IRQ_TIMER:
+     if(cpuid() == 0){
+       acquire(&tickslock);
++      ticksUpdate();                           //Task4.3, call ticksUpdate to update all parameters (More logical to update before ticks++)
+       ticks++;
+       wakeup(&ticks);
+       release(&tickslock);
+@@ -98,15 +99,16 @@ trap(struct trapframe *tf)
+   // (If it is still executing in the kernel, let it keep running
+   // until it gets to the regular system call return.)
+   if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)
+-    exit();
++    exit(1);
+ 
+   // Force process to give up CPU on clock tick.
+   // If interrupts were on while locks held, would need to check nlock.
+   if(myproc() && myproc()->state == RUNNING &&
+-     tf->trapno == T_IRQ0+IRQ_TIMER)
+-    yield();
++     tf->trapno == T_IRQ0+IRQ_TIMER){
++      yield();
++     }
+ 
+   // Check if the process has been killed since we yielded
+   if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)
+-    exit();
++    exit(1);
+ }
+diff --git a/types.h b/types.h
+index e4adf64..a0ebdcb 100644
+--- a/types.h
++++ b/types.h
+@@ -2,3 +2,4 @@ typedef unsigned int   uint;
+ typedef unsigned short ushort;
+ typedef unsigned char  uchar;
+ typedef uint pde_t;
++#define null (void*)0
+\ No newline at end of file
+diff --git a/user.h b/user.h
+index 4f99c52..a101359 100644
+--- a/user.h
++++ b/user.h
+@@ -1,10 +1,12 @@
+ struct stat;
+ struct rtcdate;
++struct perf;
+ 
+ // system calls
+ int fork(void);
+-int exit(void) __attribute__((noreturn));
+-int wait(void);
++int exit(int status) __attribute__((noreturn));
++int wait(int *status);
++int memsize(void);                              //Task2
+ int pipe(int*);
+ int write(int, const void*, int);
+ int read(int, void*, int);
+@@ -23,6 +25,10 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int set_ps_priority(int);                       //Task4.2
++int set_cfs_priority(int);                      //Task4.3
++int policy(int);                                //Task4.4
++int proc_info(struct perf*);                    //Task4.5
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/usertests.c b/usertests.c
+index a1e97e7..aabc854 100644
+--- a/usertests.c
++++ b/usertests.c
+@@ -21,19 +21,19 @@ iputtest(void)
+ 
+   if(mkdir("iputdir") < 0){
+     printf(stdout, "mkdir failed\n");
+-    exit();
++    exit(1);
+   }
+   if(chdir("iputdir") < 0){
+     printf(stdout, "chdir iputdir failed\n");
+-    exit();
++    exit(1);
+   }
+   if(unlink("../iputdir") < 0){
+     printf(stdout, "unlink ../iputdir failed\n");
+-    exit();
++    exit(1);
+   }
+   if(chdir("/") < 0){
+     printf(stdout, "chdir / failed\n");
+-    exit();
++    exit(1);
+   }
+   printf(stdout, "iput test ok\n");
+ }
+@@ -49,24 +49,25 @@ exitiputtest(void)
+   pid = fork();
+   if(pid < 0){
+     printf(stdout, "fork failed\n");
+-    exit();
++    exit(1);
+   }
+   if(pid == 0){
+     if(mkdir("iputdir") < 0){
+       printf(stdout, "mkdir failed\n");
+-      exit();
++      exit(1);
+     }
+     if(chdir("iputdir") < 0){
+       printf(stdout, "child chdir failed\n");
+-      exit();
++      exit(1);
+     }
+     if(unlink("../iputdir") < 0){
+       printf(stdout, "unlink ../iputdir failed\n");
+-      exit();
++      exit(1);
+     }
+-    exit();
++    exit(0);
+   }
+-  wait();
++  int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++  wait(&Cstatus);
+   printf(stdout, "exitiput test ok\n");
+ }
+ 
+@@ -89,27 +90,28 @@ openiputtest(void)
+   printf(stdout, "openiput test\n");
+   if(mkdir("oidir") < 0){
+     printf(stdout, "mkdir oidir failed\n");
+-    exit();
++    exit(1);
+   }
+   pid = fork();
+   if(pid < 0){
+     printf(stdout, "fork failed\n");
+-    exit();
++    exit(1);
+   }
+   if(pid == 0){
+     int fd = open("oidir", O_RDWR);
+     if(fd >= 0){
+       printf(stdout, "open directory for write succeeded\n");
+-      exit();
++      exit(0);
+     }
+-    exit();
++    exit(1);
+   }
+   sleep(1);
+   if(unlink("oidir") != 0){
+     printf(stdout, "unlink failed\n");
+-    exit();
++    exit(1);
+   }
+-  wait();
++  int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++  wait(&Cstatus);
+   printf(stdout, "openiput test ok\n");
+ }
+ 
+@@ -124,13 +126,13 @@ opentest(void)
+   fd = open("echo", 0);
+   if(fd < 0){
+     printf(stdout, "open echo failed!\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+   fd = open("doesnotexist", 0);
+   if(fd >= 0){
+     printf(stdout, "open doesnotexist succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   printf(stdout, "open test ok\n");
+ }
+@@ -147,16 +149,16 @@ writetest(void)
+     printf(stdout, "creat small succeeded; ok\n");
+   } else {
+     printf(stdout, "error: creat small failed!\n");
+-    exit();
++    exit(1);
+   }
+   for(i = 0; i < 100; i++){
+     if(write(fd, "aaaaaaaaaa", 10) != 10){
+       printf(stdout, "error: write aa %d new file failed\n", i);
+-      exit();
++      exit(1);
+     }
+     if(write(fd, "bbbbbbbbbb", 10) != 10){
+       printf(stdout, "error: write bb %d new file failed\n", i);
+-      exit();
++      exit(1);
+     }
+   }
+   printf(stdout, "writes ok\n");
+@@ -166,20 +168,20 @@ writetest(void)
+     printf(stdout, "open small succeeded ok\n");
+   } else {
+     printf(stdout, "error: open small failed!\n");
+-    exit();
++    exit(1);
+   }
+   i = read(fd, buf, 2000);
+   if(i == 2000){
+     printf(stdout, "read succeeded ok\n");
+   } else {
+     printf(stdout, "read failed\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+ 
+   if(unlink("small") < 0){
+     printf(stdout, "unlink small failed\n");
+-    exit();
++    exit(1);
+   }
+   printf(stdout, "small file test ok\n");
+ }
+@@ -194,14 +196,14 @@ writetest1(void)
+   fd = open("big", O_CREATE|O_RDWR);
+   if(fd < 0){
+     printf(stdout, "error: creat big failed!\n");
+-    exit();
++    exit(1);
+   }
+ 
+   for(i = 0; i < MAXFILE; i++){
+     ((int*)buf)[0] = i;
+     if(write(fd, buf, 512) != 512){
+       printf(stdout, "error: write big file failed\n", i);
+-      exit();
++      exit(1);
+     }
+   }
+ 
+@@ -210,7 +212,7 @@ writetest1(void)
+   fd = open("big", O_RDONLY);
+   if(fd < 0){
+     printf(stdout, "error: open big failed!\n");
+-    exit();
++    exit(1);
+   }
+ 
+   n = 0;
+@@ -219,24 +221,24 @@ writetest1(void)
+     if(i == 0){
+       if(n == MAXFILE - 1){
+         printf(stdout, "read only %d blocks from big", n);
+-        exit();
++        exit(1);
+       }
+       break;
+     } else if(i != 512){
+       printf(stdout, "read failed %d\n", i);
+-      exit();
++      exit(1);
+     }
+     if(((int*)buf)[0] != n){
+       printf(stdout, "read content of block %d is %d\n",
+              n, ((int*)buf)[0]);
+-      exit();
++      exit(1);
+     }
+     n++;
+   }
+   close(fd);
+   if(unlink("big") < 0){
+     printf(stdout, "unlink big failed\n");
+-    exit();
++    exit(1);
+   }
+   printf(stdout, "big files ok\n");
+ }
+@@ -270,22 +272,22 @@ void dirtest(void)
+ 
+   if(mkdir("dir0") < 0){
+     printf(stdout, "mkdir failed\n");
+-    exit();
++    exit(1);
+   }
+ 
+   if(chdir("dir0") < 0){
+     printf(stdout, "chdir dir0 failed\n");
+-    exit();
++    exit(1);
+   }
+ 
+   if(chdir("..") < 0){
+     printf(stdout, "chdir .. failed\n");
+-    exit();
++    exit(1);
+   }
+ 
+   if(unlink("dir0") < 0){
+     printf(stdout, "unlink dir0 failed\n");
+-    exit();
++    exit(1);
+   }
+   printf(stdout, "mkdir test ok\n");
+ }
+@@ -296,7 +298,7 @@ exectest(void)
+   printf(stdout, "exec test\n");
+   if(exec("echo", echoargv) < 0){
+     printf(stdout, "exec echo failed\n");
+-    exit();
++    exit(1);
+   }
+ }
+ 
+@@ -310,7 +312,7 @@ pipe1(void)
+ 
+   if(pipe(fds) != 0){
+     printf(1, "pipe() failed\n");
+-    exit();
++    exit(1);
+   }
+   pid = fork();
+   seq = 0;
+@@ -321,10 +323,10 @@ pipe1(void)
+         buf[i] = seq++;
+       if(write(fds[1], buf, 1033) != 1033){
+         printf(1, "pipe1 oops 1\n");
+-        exit();
++        exit(1);
+       }
+     }
+-    exit();
++    exit(0);
+   } else if(pid > 0){
+     close(fds[1]);
+     total = 0;
+@@ -343,13 +345,14 @@ pipe1(void)
+     }
+     if(total != 5 * 1033){
+       printf(1, "pipe1 oops 3 total %d\n", total);
+-      exit();
++      exit(1);
+     }
+     close(fds[0]);
+-    wait();
++    int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++    wait(&Cstatus);
+   } else {
+     printf(1, "fork() failed\n");
+-    exit();
++    exit(1);
+   }
+   printf(1, "pipe1 ok\n");
+ }
+@@ -394,9 +397,12 @@ preempt(void)
+   kill(pid2);
+   kill(pid3);
+   printf(1, "wait... ");
+-  wait();
+-  wait();
+-  wait();
++  int Cstatus1;    //child exit's status returning from wait() call, Task 3.2
++  int Cstatus2;    //child exit's status returning from wait() call, Task 3.2
++  int Cstatus3;    //child exit's status returning from wait() call, Task 3.2
++  wait(&Cstatus1);
++  wait(&Cstatus2);
++  wait(&Cstatus3);
+   printf(1, "preempt ok\n");
+ }
+ 
+@@ -413,12 +419,13 @@ exitwait(void)
+       return;
+     }
+     if(pid){
+-      if(wait() != pid){
++      int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++      if(wait(&Cstatus) != pid){
+         printf(1, "wait wrong pid\n");
+         return;
+       }
+     } else {
+-      exit();
++      exit(0);
+     }
+   }
+   printf(1, "exitwait ok\n");
+@@ -447,13 +454,14 @@ mem(void)
+     if(m1 == 0){
+       printf(1, "couldn't allocate mem?!!\n");
+       kill(ppid);
+-      exit();
++      exit(1);
+     }
+     free(m1);
+     printf(1, "mem ok\n");
+-    exit();
++    exit(0);
+   } else {
+-    wait();
++    int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++    wait(&Cstatus);
+   }
+ }
+ 
+@@ -484,9 +492,11 @@ sharedfd(void)
+     }
+   }
+   if(pid == 0)
+-    exit();
+-  else
+-    wait();
++    exit(0);
++  else{
++    int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++    wait(&Cstatus);
++  }
+   close(fd);
+   fd = open("sharedfd", 0);
+   if(fd < 0){
+@@ -508,7 +518,7 @@ sharedfd(void)
+     printf(1, "sharedfd ok\n");
+   } else {
+     printf(1, "sharedfd oops %d %d\n", nc, np);
+-    exit();
++    exit(1);
+   }
+ }
+ 
+@@ -530,29 +540,30 @@ fourfiles(void)
+     pid = fork();
+     if(pid < 0){
+       printf(1, "fork failed\n");
+-      exit();
++      exit(1);
+     }
+ 
+     if(pid == 0){
+       fd = open(fname, O_CREATE | O_RDWR);
+       if(fd < 0){
+         printf(1, "create failed\n");
+-        exit();
++        exit(1);
+       }
+ 
+       memset(buf, '0'+pi, 512);
+       for(i = 0; i < 12; i++){
+         if((n = write(fd, buf, 500)) != 500){
+           printf(1, "write failed %d\n", n);
+-          exit();
++          exit(1);
+         }
+       }
+-      exit();
++      exit(0);
+     }
+   }
+ 
++  int Cstatus;    //child exit's status returning from wait() call, Task 3.2
+   for(pi = 0; pi < 4; pi++){
+-    wait();
++    wait(&Cstatus);
+   }
+ 
+   for(i = 0; i < 2; i++){
+@@ -563,7 +574,7 @@ fourfiles(void)
+       for(j = 0; j < n; j++){
+         if(buf[j] != '0'+i){
+           printf(1, "wrong char\n");
+-          exit();
++          exit(1);
+         }
+       }
+       total += n;
+@@ -571,7 +582,7 @@ fourfiles(void)
+     close(fd);
+     if(total != 12*500){
+       printf(1, "wrong length %d\n", total);
+-      exit();
++      exit(1);
+     }
+     unlink(fname);
+   }
+@@ -593,7 +604,7 @@ createdelete(void)
+     pid = fork();
+     if(pid < 0){
+       printf(1, "fork failed\n");
+-      exit();
++      exit(1);
+     }
+ 
+     if(pid == 0){
+@@ -604,23 +615,24 @@ createdelete(void)
+         fd = open(name, O_CREATE | O_RDWR);
+         if(fd < 0){
+           printf(1, "create failed\n");
+-          exit();
++          exit(1);
+         }
+         close(fd);
+         if(i > 0 && (i % 2 ) == 0){
+           name[1] = '0' + (i / 2);
+           if(unlink(name) < 0){
+             printf(1, "unlink failed\n");
+-            exit();
++            exit(1);
+           }
+         }
+       }
+-      exit();
++      exit(0);
+     }
+   }
+ 
++  int Cstatus;    //child exit's status returning from wait() call, Task 3.2
+   for(pi = 0; pi < 4; pi++){
+-    wait();
++    wait(&Cstatus);
+   }
+ 
+   name[0] = name[1] = name[2] = 0;
+@@ -631,10 +643,10 @@ createdelete(void)
+       fd = open(name, 0);
+       if((i == 0 || i >= N/2) && fd < 0){
+         printf(1, "oops createdelete %s didn't exist\n", name);
+-        exit();
++        exit(1);
+       } else if((i >= 1 && i < N/2) && fd >= 0){
+         printf(1, "oops createdelete %s did exist\n", name);
+-        exit();
++        exit(1);
+       }
+       if(fd >= 0)
+         close(fd);
+@@ -662,7 +674,7 @@ unlinkread(void)
+   fd = open("unlinkread", O_CREATE | O_RDWR);
+   if(fd < 0){
+     printf(1, "create unlinkread failed\n");
+-    exit();
++    exit(1);
+   }
+   write(fd, "hello", 5);
+   close(fd);
+@@ -670,11 +682,11 @@ unlinkread(void)
+   fd = open("unlinkread", O_RDWR);
+   if(fd < 0){
+     printf(1, "open unlinkread failed\n");
+-    exit();
++    exit(1);
+   }
+   if(unlink("unlinkread") != 0){
+     printf(1, "unlink unlinkread failed\n");
+-    exit();
++    exit(1);
+   }
+ 
+   fd1 = open("unlinkread", O_CREATE | O_RDWR);
+@@ -683,15 +695,15 @@ unlinkread(void)
+ 
+   if(read(fd, buf, sizeof(buf)) != 5){
+     printf(1, "unlinkread read failed");
+-    exit();
++    exit(1);
+   }
+   if(buf[0] != 'h'){
+     printf(1, "unlinkread wrong data\n");
+-    exit();
++    exit(1);
+   }
+   if(write(fd, buf, 10) != 10){
+     printf(1, "unlinkread write failed\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+   unlink("unlinkread");
+@@ -711,50 +723,50 @@ linktest(void)
+   fd = open("lf1", O_CREATE|O_RDWR);
+   if(fd < 0){
+     printf(1, "create lf1 failed\n");
+-    exit();
++    exit(1);
+   }
+   if(write(fd, "hello", 5) != 5){
+     printf(1, "write lf1 failed\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+ 
+   if(link("lf1", "lf2") < 0){
+     printf(1, "link lf1 lf2 failed\n");
+-    exit();
++    exit(1);
+   }
+   unlink("lf1");
+ 
+   if(open("lf1", 0) >= 0){
+     printf(1, "unlinked lf1 but it is still there!\n");
+-    exit();
++    exit(1);
+   }
+ 
+   fd = open("lf2", 0);
+   if(fd < 0){
+     printf(1, "open lf2 failed\n");
+-    exit();
++    exit(1);
+   }
+   if(read(fd, buf, sizeof(buf)) != 5){
+     printf(1, "read lf2 failed\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+ 
+   if(link("lf2", "lf2") >= 0){
+     printf(1, "link lf2 lf2 succeeded! oops\n");
+-    exit();
++    exit(0);
+   }
+ 
+   unlink("lf2");
+   if(link("lf2", "lf1") >= 0){
+     printf(1, "link non-existant succeeded! oops\n");
+-    exit();
++    exit(1);
+   }
+ 
+   if(link(".", "lf1") >= 0){
+     printf(1, "link . lf1 succeeded! oops\n");
+-    exit();
++    exit(0);
+   }
+ 
+   printf(1, "linktest ok\n");
+@@ -787,14 +799,16 @@ concreate(void)
+       fd = open(file, O_CREATE | O_RDWR);
+       if(fd < 0){
+         printf(1, "concreate create %s failed\n", file);
+-        exit();
++        exit(1);
+       }
+       close(fd);
+     }
+     if(pid == 0)
+-      exit();
+-    else
+-      wait();
++      exit(0);
++    else{
++      int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++      wait(&Cstatus);
++    }
+   }
+ 
+   memset(fa, 0, sizeof(fa));
+@@ -807,11 +821,11 @@ concreate(void)
+       i = de.name[1] - '0';
+       if(i < 0 || i >= sizeof(fa)){
+         printf(1, "concreate weird file %s\n", de.name);
+-        exit();
++        exit(1);
+       }
+       if(fa[i]){
+         printf(1, "concreate duplicate file %s\n", de.name);
+-        exit();
++        exit(1);
+       }
+       fa[i] = 1;
+       n++;
+@@ -821,7 +835,7 @@ concreate(void)
+ 
+   if(n != 40){
+     printf(1, "concreate not enough files in directory listing\n");
+-    exit();
++    exit(1);
+   }
+ 
+   for(i = 0; i < 40; i++){
+@@ -829,7 +843,7 @@ concreate(void)
+     pid = fork();
+     if(pid < 0){
+       printf(1, "fork failed\n");
+-      exit();
++      exit(1);
+     }
+     if(((i % 3) == 0 && pid == 0) ||
+        ((i % 3) == 1 && pid != 0)){
+@@ -844,9 +858,11 @@ concreate(void)
+       unlink(file);
+     }
+     if(pid == 0)
+-      exit();
+-    else
+-      wait();
++      exit(0);
++    else{
++      int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++      wait(&Cstatus);
++    }
+   }
+ 
+   printf(1, "concreate ok\n");
+@@ -865,7 +881,7 @@ linkunlink()
+   pid = fork();
+   if(pid < 0){
+     printf(1, "fork failed\n");
+-    exit();
++    exit(1);
+   }
+ 
+   unsigned int x = (pid ? 1 : 97);
+@@ -880,10 +896,12 @@ linkunlink()
+     }
+   }
+ 
+-  if(pid)
+-    wait();
++  if(pid){
++    int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++    wait(&Cstatus);
++  }
+   else
+-    exit();
++    exit(0);
+ 
+   printf(1, "linkunlink ok\n");
+ }
+@@ -901,7 +919,7 @@ bigdir(void)
+   fd = open("bd", O_CREATE);
+   if(fd < 0){
+     printf(1, "bigdir create failed\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+ 
+@@ -912,7 +930,7 @@ bigdir(void)
+     name[3] = '\0';
+     if(link("bd", name) != 0){
+       printf(1, "bigdir link failed\n");
+-      exit();
++      exit(1);
+     }
+   }
+ 
+@@ -924,7 +942,7 @@ bigdir(void)
+     name[3] = '\0';
+     if(unlink(name) != 0){
+       printf(1, "bigdir unlink failed");
+-      exit();
++      exit(1);
+     }
+   }
+ 
+@@ -941,31 +959,31 @@ subdir(void)
+   unlink("ff");
+   if(mkdir("dd") != 0){
+     printf(1, "subdir mkdir dd failed\n");
+-    exit();
++    exit(1);
+   }
+ 
+   fd = open("dd/ff", O_CREATE | O_RDWR);
+   if(fd < 0){
+     printf(1, "create dd/ff failed\n");
+-    exit();
++    exit(1);
+   }
+   write(fd, "ff", 2);
+   close(fd);
+ 
+   if(unlink("dd") >= 0){
+     printf(1, "unlink dd (non-empty dir) succeeded!\n");
+-    exit();
++    exit(0);
+   }
+ 
+   if(mkdir("/dd/dd") != 0){
+     printf(1, "subdir mkdir dd/dd failed\n");
+-    exit();
++    exit(1);
+   }
+ 
+   fd = open("dd/dd/ff", O_CREATE | O_RDWR);
+   if(fd < 0){
+     printf(1, "create dd/dd/ff failed\n");
+-    exit();
++    exit(1);
+   }
+   write(fd, "FF", 2);
+   close(fd);
+@@ -973,142 +991,142 @@ subdir(void)
+   fd = open("dd/dd/../ff", 0);
+   if(fd < 0){
+     printf(1, "open dd/dd/../ff failed\n");
+-    exit();
++    exit(1);
+   }
+   cc = read(fd, buf, sizeof(buf));
+   if(cc != 2 || buf[0] != 'f'){
+     printf(1, "dd/dd/../ff wrong content\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+ 
+   if(link("dd/dd/ff", "dd/dd/ffff") != 0){
+     printf(1, "link dd/dd/ff dd/dd/ffff failed\n");
+-    exit();
++    exit(1);
+   }
+ 
+   if(unlink("dd/dd/ff") != 0){
+     printf(1, "unlink dd/dd/ff failed\n");
+-    exit();
++    exit(1);
+   }
+   if(open("dd/dd/ff", O_RDONLY) >= 0){
+     printf(1, "open (unlinked) dd/dd/ff succeeded\n");
+-    exit();
++    exit(0);
+   }
+ 
+   if(chdir("dd") != 0){
+     printf(1, "chdir dd failed\n");
+-    exit();
++    exit(1);
+   }
+   if(chdir("dd/../../dd") != 0){
+     printf(1, "chdir dd/../../dd failed\n");
+-    exit();
++    exit(1);
+   }
+   if(chdir("dd/../../../dd") != 0){
+     printf(1, "chdir dd/../../dd failed\n");
+-    exit();
++    exit(1);
+   }
+   if(chdir("./..") != 0){
+     printf(1, "chdir ./.. failed\n");
+-    exit();
++    exit(1);
+   }
+ 
+   fd = open("dd/dd/ffff", 0);
+   if(fd < 0){
+     printf(1, "open dd/dd/ffff failed\n");
+-    exit();
++    exit(1);
+   }
+   if(read(fd, buf, sizeof(buf)) != 2){
+     printf(1, "read dd/dd/ffff wrong len\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+ 
+   if(open("dd/dd/ff", O_RDONLY) >= 0){
+     printf(1, "open (unlinked) dd/dd/ff succeeded!\n");
+-    exit();
++    exit(0);
+   }
+ 
+   if(open("dd/ff/ff", O_CREATE|O_RDWR) >= 0){
+     printf(1, "create dd/ff/ff succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(open("dd/xx/ff", O_CREATE|O_RDWR) >= 0){
+     printf(1, "create dd/xx/ff succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(open("dd", O_CREATE) >= 0){
+     printf(1, "create dd succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(open("dd", O_RDWR) >= 0){
+     printf(1, "open dd rdwr succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(open("dd", O_WRONLY) >= 0){
+     printf(1, "open dd wronly succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(link("dd/ff/ff", "dd/dd/xx") == 0){
+     printf(1, "link dd/ff/ff dd/dd/xx succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(link("dd/xx/ff", "dd/dd/xx") == 0){
+     printf(1, "link dd/xx/ff dd/dd/xx succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(link("dd/ff", "dd/dd/ffff") == 0){
+     printf(1, "link dd/ff dd/dd/ffff succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(mkdir("dd/ff/ff") == 0){
+     printf(1, "mkdir dd/ff/ff succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(mkdir("dd/xx/ff") == 0){
+     printf(1, "mkdir dd/xx/ff succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(mkdir("dd/dd/ffff") == 0){
+     printf(1, "mkdir dd/dd/ffff succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(unlink("dd/xx/ff") == 0){
+     printf(1, "unlink dd/xx/ff succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(unlink("dd/ff/ff") == 0){
+     printf(1, "unlink dd/ff/ff succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(chdir("dd/ff") == 0){
+     printf(1, "chdir dd/ff succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(chdir("dd/xx") == 0){
+     printf(1, "chdir dd/xx succeeded!\n");
+-    exit();
++    exit(0);
+   }
+ 
+   if(unlink("dd/dd/ffff") != 0){
+     printf(1, "unlink dd/dd/ff failed\n");
+-    exit();
++    exit(1);
+   }
+   if(unlink("dd/ff") != 0){
+     printf(1, "unlink dd/ff failed\n");
+-    exit();
++    exit(1);
+   }
+   if(unlink("dd") == 0){
+     printf(1, "unlink non-empty dd succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(unlink("dd/dd") < 0){
+     printf(1, "unlink dd/dd failed\n");
+-    exit();
++    exit(1);
+   }
+   if(unlink("dd") < 0){
+     printf(1, "unlink dd failed\n");
+-    exit();
++    exit(1);
+   }
+ 
+   printf(1, "subdir ok\n");
+@@ -1127,14 +1145,14 @@ bigwrite(void)
+     fd = open("bigwrite", O_CREATE | O_RDWR);
+     if(fd < 0){
+       printf(1, "cannot create bigwrite\n");
+-      exit();
++      exit(1);
+     }
+     int i;
+     for(i = 0; i < 2; i++){
+       int cc = write(fd, buf, sz);
+       if(cc != sz){
+         printf(1, "write(%d) ret %d\n", sz, cc);
+-        exit();
++        exit(1);
+       }
+     }
+     close(fd);
+@@ -1155,13 +1173,13 @@ bigfile(void)
+   fd = open("bigfile", O_CREATE | O_RDWR);
+   if(fd < 0){
+     printf(1, "cannot create bigfile");
+-    exit();
++    exit(1);
+   }
+   for(i = 0; i < 20; i++){
+     memset(buf, i, 600);
+     if(write(fd, buf, 600) != 600){
+       printf(1, "write bigfile failed\n");
+-      exit();
++      exit(1);
+     }
+   }
+   close(fd);
+@@ -1169,31 +1187,31 @@ bigfile(void)
+   fd = open("bigfile", 0);
+   if(fd < 0){
+     printf(1, "cannot open bigfile\n");
+-    exit();
++    exit(1);
+   }
+   total = 0;
+   for(i = 0; ; i++){
+     cc = read(fd, buf, 300);
+     if(cc < 0){
+       printf(1, "read bigfile failed\n");
+-      exit();
++      exit(1);
+     }
+     if(cc == 0)
+       break;
+     if(cc != 300){
+       printf(1, "short read bigfile\n");
+-      exit();
++      exit(1);
+     }
+     if(buf[0] != i/2 || buf[299] != i/2){
+       printf(1, "read bigfile wrong data\n");
+-      exit();
++      exit(1);
+     }
+     total += cc;
+   }
+   close(fd);
+   if(total != 20*600){
+     printf(1, "read bigfile wrong total\n");
+-    exit();
++    exit(1);
+   }
+   unlink("bigfile");
+ 
+@@ -1210,32 +1228,32 @@ fourteen(void)
+ 
+   if(mkdir("12345678901234") != 0){
+     printf(1, "mkdir 12345678901234 failed\n");
+-    exit();
++    exit(1);
+   }
+   if(mkdir("12345678901234/123456789012345") != 0){
+     printf(1, "mkdir 12345678901234/123456789012345 failed\n");
+-    exit();
++    exit(1);
+   }
+   fd = open("123456789012345/123456789012345/123456789012345", O_CREATE);
+   if(fd < 0){
+     printf(1, "create 123456789012345/123456789012345/123456789012345 failed\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+   fd = open("12345678901234/12345678901234/12345678901234", 0);
+   if(fd < 0){
+     printf(1, "open 12345678901234/12345678901234/12345678901234 failed\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+ 
+   if(mkdir("12345678901234/12345678901234") == 0){
+     printf(1, "mkdir 12345678901234/12345678901234 succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(mkdir("123456789012345/12345678901234") == 0){
+     printf(1, "mkdir 12345678901234/123456789012345 succeeded!\n");
+-    exit();
++    exit(0);
+   }
+ 
+   printf(1, "fourteen ok\n");
+@@ -1247,35 +1265,35 @@ rmdot(void)
+   printf(1, "rmdot test\n");
+   if(mkdir("dots") != 0){
+     printf(1, "mkdir dots failed\n");
+-    exit();
++    exit(1);
+   }
+   if(chdir("dots") != 0){
+     printf(1, "chdir dots failed\n");
+-    exit();
++    exit(1);
+   }
+   if(unlink(".") == 0){
+     printf(1, "rm . worked!\n");
+-    exit();
++    exit(0);
+   }
+   if(unlink("..") == 0){
+     printf(1, "rm .. worked!\n");
+-    exit();
++    exit(0);
+   }
+   if(chdir("/") != 0){
+     printf(1, "chdir / failed\n");
+-    exit();
++    exit(1);
+   }
+   if(unlink("dots/.") == 0){
+     printf(1, "unlink dots/. worked!\n");
+-    exit();
++    exit(0);
+   }
+   if(unlink("dots/..") == 0){
+     printf(1, "unlink dots/.. worked!\n");
+-    exit();
++    exit(0);
+   }
+   if(unlink("dots") != 0){
+     printf(1, "unlink dots failed!\n");
+-    exit();
++    exit(1);
+   }
+   printf(1, "rmdot ok\n");
+ }
+@@ -1290,49 +1308,49 @@ dirfile(void)
+   fd = open("dirfile", O_CREATE);
+   if(fd < 0){
+     printf(1, "create dirfile failed\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+   if(chdir("dirfile") == 0){
+     printf(1, "chdir dirfile succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   fd = open("dirfile/xx", 0);
+   if(fd >= 0){
+     printf(1, "create dirfile/xx succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   fd = open("dirfile/xx", O_CREATE);
+   if(fd >= 0){
+     printf(1, "create dirfile/xx succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(mkdir("dirfile/xx") == 0){
+     printf(1, "mkdir dirfile/xx succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(unlink("dirfile/xx") == 0){
+     printf(1, "unlink dirfile/xx succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(link("README", "dirfile/xx") == 0){
+     printf(1, "link to dirfile/xx succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   if(unlink("dirfile") != 0){
+     printf(1, "unlink dirfile failed!\n");
+-    exit();
++    exit(1);
+   }
+ 
+   fd = open(".", O_RDWR);
+   if(fd >= 0){
+     printf(1, "open . for writing succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   fd = open(".", 0);
+   if(write(fd, "x", 1) > 0){
+     printf(1, "write . succeeded!\n");
+-    exit();
++    exit(0);
+   }
+   close(fd);
+ 
+@@ -1351,11 +1369,11 @@ iref(void)
+   for(i = 0; i < 50 + 1; i++){
+     if(mkdir("irefd") != 0){
+       printf(1, "mkdir irefd failed\n");
+-      exit();
++      exit(1);
+     }
+     if(chdir("irefd") != 0){
+       printf(1, "chdir irefd failed\n");
+-      exit();
++      exit(1);
+     }
+ 
+     mkdir("");
+@@ -1388,24 +1406,25 @@ forktest(void)
+     if(pid < 0)
+       break;
+     if(pid == 0)
+-      exit();
++      exit(0);
+   }
+ 
+   if(n == 1000){
+     printf(1, "fork claimed to work 1000 times!\n");
+-    exit();
++    exit(0);
+   }
+ 
++  int Cstatus;    //child exit's status returning from wait() call, Task 3.2
+   for(; n > 0; n--){
+-    if(wait() < 0){
++    if(wait(&Cstatus) < 0){
+       printf(1, "wait stopped early\n");
+-      exit();
++      exit(1);
+     }
+   }
+ 
+-  if(wait() != -1){
++  if(wait(&Cstatus) != -1){
+     printf(1, "wait got too many\n");
+-    exit();
++    exit(1);
+   }
+ 
+   printf(1, "fork test OK\n");
+@@ -1428,7 +1447,7 @@ sbrktest(void)
+     b = sbrk(1);
+     if(b != a){
+       printf(stdout, "sbrk test failed %d %x %x\n", i, a, b);
+-      exit();
++      exit(1);
+     }
+     *b = 1;
+     a = b + 1;
+@@ -1436,17 +1455,18 @@ sbrktest(void)
+   pid = fork();
+   if(pid < 0){
+     printf(stdout, "sbrk test fork failed\n");
+-    exit();
++    exit(1);
+   }
+   c = sbrk(1);
+   c = sbrk(1);
+   if(c != a + 1){
+     printf(stdout, "sbrk test failed post-fork\n");
+-    exit();
++    exit(1);
+   }
+   if(pid == 0)
+-    exit();
+-  wait();
++    exit(0);
++  int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++  wait(&Cstatus);
+ 
+   // can one grow address space to something big?
+ #define BIG (100*1024*1024)
+@@ -1455,7 +1475,7 @@ sbrktest(void)
+   p = sbrk(amt);
+   if (p != a) {
+     printf(stdout, "sbrk test failed to grow big address space; enough phys mem?\n");
+-    exit();
++    exit(1);
+   }
+   lastaddr = (char*) (BIG-1);
+   *lastaddr = 99;
+@@ -1465,12 +1485,12 @@ sbrktest(void)
+   c = sbrk(-4096);
+   if(c == (char*)0xffffffff){
+     printf(stdout, "sbrk could not deallocate\n");
+-    exit();
++    exit(1);
+   }
+   c = sbrk(0);
+   if(c != a - 4096){
+     printf(stdout, "sbrk deallocation produced wrong address, a %x c %x\n", a, c);
+-    exit();
++    exit(1);
+   }
+ 
+   // can one re-allocate that page?
+@@ -1478,19 +1498,19 @@ sbrktest(void)
+   c = sbrk(4096);
+   if(c != a || sbrk(0) != a + 4096){
+     printf(stdout, "sbrk re-allocation failed, a %x c %x\n", a, c);
+-    exit();
++    exit(1);
+   }
+   if(*lastaddr == 99){
+     // should be zero
+     printf(stdout, "sbrk de-allocation didn't really deallocate\n");
+-    exit();
++    exit(1);
+   }
+ 
+   a = sbrk(0);
+   c = sbrk(-(sbrk(0) - oldbrk));
+   if(c != a){
+     printf(stdout, "sbrk downsize failed, a %x c %x\n", a, c);
+-    exit();
++    exit(1);
+   }
+ 
+   // can we read the kernel's memory?
+@@ -1499,21 +1519,22 @@ sbrktest(void)
+     pid = fork();
+     if(pid < 0){
+       printf(stdout, "fork failed\n");
+-      exit();
++      exit(1);
+     }
+     if(pid == 0){
+       printf(stdout, "oops could read %x = %x\n", a, *a);
+       kill(ppid);
+-      exit();
++      exit(1);
+     }
+-    wait();
++    int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++    wait(&Cstatus);
+   }
+ 
+   // if we run the system out of memory, does it clean up the last
+   // failed allocation?
+   if(pipe(fds) != 0){
+     printf(1, "pipe() failed\n");
+-    exit();
++    exit(1);
+   }
+   for(i = 0; i < sizeof(pids)/sizeof(pids[0]); i++){
+     if((pids[i] = fork()) == 0){
+@@ -1529,15 +1550,16 @@ sbrktest(void)
+   // if those failed allocations freed up the pages they did allocate,
+   // we'll be able to allocate here
+   c = sbrk(4096);
++  int Cstatus1;    //child exit's status returning from wait() call, Task 3.2
+   for(i = 0; i < sizeof(pids)/sizeof(pids[0]); i++){
+     if(pids[i] == -1)
+       continue;
+     kill(pids[i]);
+-    wait();
++    wait(&Cstatus1);
+   }
+   if(c == (char*)0xffffffff){
+     printf(stdout, "failed sbrk leaked memory\n");
+-    exit();
++    exit(1);
+   }
+ 
+   if(sbrk(0) > oldbrk)
+@@ -1568,21 +1590,22 @@ validatetest(void)
+   printf(stdout, "validate test\n");
+   hi = 1100*1024;
+ 
++  int Cstatus;    //child exit's status returning from wait() call, Task 3.2
+   for(p = 0; p <= (uint)hi; p += 4096){
+     if((pid = fork()) == 0){
+       // try to crash the kernel by passing in a badly placed integer
+       validateint((int*)p);
+-      exit();
++      exit(0);
+     }
+     sleep(0);
+     sleep(0);
+     kill(pid);
+-    wait();
++    wait(&Cstatus);
+ 
+     // try to crash the kernel by passing in a bad string pointer
+     if(link("nosuchfile", (char*)p) != -1){
+       printf(stdout, "link should not succeed\n");
+-      exit();
++      exit(1);
+     }
+   }
+ 
+@@ -1600,7 +1623,7 @@ bsstest(void)
+   for(i = 0; i < sizeof(uninit); i++){
+     if(uninit[i] != '\0'){
+       printf(stdout, "bss test failed\n");
+-      exit();
++      exit(1);
+     }
+   }
+   printf(stdout, "bss test ok\n");
+@@ -1627,16 +1650,17 @@ bigargtest(void)
+     printf(stdout, "bigarg test ok\n");
+     fd = open("bigarg-ok", O_CREATE);
+     close(fd);
+-    exit();
++    exit(0);
+   } else if(pid < 0){
+     printf(stdout, "bigargtest: fork failed\n");
+-    exit();
++    exit(1);
+   }
+-  wait();
++  int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++  wait(&Cstatus);
+   fd = open("bigarg-ok", 0);
+   if(fd < 0){
+     printf(stdout, "bigarg test failed!\n");
+-    exit();
++    exit(1);
+   }
+   close(fd);
+   unlink("bigarg-ok");
+@@ -1715,12 +1739,13 @@ uio()
+     port = RTC_DATA;
+     asm volatile("inb %1,%0" : "=a" (val) : "d" (port));
+     printf(1, "uio: uio succeeded; test FAILED\n");
+-    exit();
++    exit(1);
+   } else if(pid < 0){
+     printf (1, "fork failed\n");
+-    exit();
++    exit(1);
+   }
+-  wait();
++  int Cstatus;    //child exit's status returning from wait() call, Task 3.2
++  wait(&Cstatus);
+   printf(1, "uio test done\n");
+ }
+ 
+@@ -1730,7 +1755,7 @@ void argptest()
+   fd = open("init", O_RDONLY);
+   if (fd < 0) {
+     printf(2, "open failed\n");
+-    exit();
++    exit(1);
+   }
+   read(fd, sbrk(0) - 1, -1);
+   close(fd);
+@@ -1752,7 +1777,7 @@ main(int argc, char *argv[])
+ 
+   if(open("usertests.ran", 0) >= 0){
+     printf(1, "already ran user tests -- rebuild fs.img\n");
+-    exit();
++    exit(0);
+   }
+   close(open("usertests.ran", O_CREATE));
+ 
+@@ -1799,5 +1824,5 @@ main(int argc, char *argv[])
+ 
+   exectest();
+ 
+-  exit();
++  exit(0);
+ }
+diff --git a/usys.S b/usys.S
+index 8bfd8a1..3941d5c 100644
+--- a/usys.S
++++ b/usys.S
+@@ -8,6 +8,7 @@
+     int $T_SYSCALL; \
+     ret
+ 
++SYSCALL(memsize)
+ SYSCALL(fork)
+ SYSCALL(exit)
+ SYSCALL(wait)
+@@ -29,3 +30,7 @@ SYSCALL(getpid)
+ SYSCALL(sbrk)
+ SYSCALL(sleep)
+ SYSCALL(uptime)
++SYSCALL(set_ps_priority)
++SYSCALL(set_cfs_priority)
++SYSCALL(policy)
++SYSCALL(proc_info)
+diff --git a/wc.c b/wc.c
+index d6a54df..1403266 100644
+--- a/wc.c
++++ b/wc.c
+@@ -27,7 +27,7 @@ wc(int fd, char *name)
+   }
+   if(n < 0){
+     printf(1, "wc: read error\n");
+-    exit();
++    exit(1);
+   }
+   printf(1, "%d %d %d %s\n", l, w, c, name);
+ }
+@@ -39,16 +39,16 @@ main(int argc, char *argv[])
+ 
+   if(argc <= 1){
+     wc(0, "");
+-    exit();
++    exit(1);
+   }
+ 
+   for(i = 1; i < argc; i++){
+     if((fd = open(argv[i], 0)) < 0){
+       printf(1, "wc: cannot open %s\n", argv[i]);
+-      exit();
++      exit(1);
+     }
+     wc(fd, argv[i]);
+     close(fd);
+   }
+-  exit();
++  exit(0);
+ }
+diff --git a/zombie.c b/zombie.c
+index ee817da..c96b92d 100644
+--- a/zombie.c
++++ b/zombie.c
+@@ -10,5 +10,5 @@ main(void)
+ {
+   if(fork() > 0)
+     sleep(5);  // Let child exit before parent.
+-  exit();
++  exit(0);
+ }
